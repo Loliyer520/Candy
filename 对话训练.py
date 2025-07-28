@@ -14,8 +14,8 @@ def print_menu():
     print("q - 退出程序")
     print("==========================")
 
-def load_training_samples(trains_dir='train/dialogs'):
-    """加载训练样本"""
+def load_training_samples(trains_dir='train/dialogs', max_length=256):
+    """加载训练样本，自动截断超过max_length的上下文"""
     samples = []
     
     if not os.path.exists(trains_dir):
@@ -47,8 +47,8 @@ def load_training_samples(trains_dir='train/dialogs'):
                 print(f"警告: {filename} 不是对话列表格式，跳过")
                 continue
             
-            # 构建完整对话上下文
-            context = ""
+            # 使用列表存储对话历史，便于截断
+            context_parts = []
             
             # 逐轮处理对话
             for i in range(0, len(conversation), 2):
@@ -71,15 +71,41 @@ def load_training_samples(trains_dir='train/dialogs'):
                     continue
                 
                 # 添加用户消息到上下文
-                context += f"用户：{user_content}<S>"
+                user_part = f"用户：{user_content}<S>"
+                ai_part = f"AI：{ai_content}<S>"
+                
+                # 临时构建当前上下文
+                temp_context = ''.join(context_parts) + user_part + "AI："
+                temp_full_length = len(temp_context) + len(ai_content) + len("<S>")
+                
+                # 如果超过最大长度，移除最早的对话轮次
+                while temp_full_length > max_length and len(context_parts) > 0:
+                    # 移除最早的对话轮次（一对用户+AI）
+                    if len(context_parts) >= 2:
+                        # 移除最早的一对对话
+                        context_parts.pop(0)  # 用户部分
+                        context_parts.pop(0)  # AI部分
+                    else:
+                        # 如果只有一部分，也移除
+                        context_parts.pop(0)
+                    
+                    # 重新计算长度
+                    temp_context = ''.join(context_parts) + user_part + "AI："
+                    temp_full_length = len(temp_context) + len(ai_content) + len("<S>")
+                
+                # 检查是否仍然超长（可能当前单轮对话就超长）
+                if temp_full_length > max_length:
+                    print(f"警告: 单轮对话长度({temp_full_length})超过max_length({max_length})，跳过该轮对话")
+                    continue
                 
                 # 创建训练样本
-                prompt = context + "AI："
+                prompt = ''.join(context_parts) + user_part + "AI："
                 target = f"{ai_content}<S>"
                 samples.append((prompt, target))
                 
-                # 将AI回复添加到后续上下文
-                context += f"AI：{ai_content}<S>"
+                # 将本轮对话添加到上下文，用于后续对话
+                context_parts.append(user_part)
+                context_parts.append(ai_part)
         
         except Exception as e:
             print(f"处理文件 {filename} 时出错: {str(e)}")
@@ -92,6 +118,7 @@ def train_dialogue_model():
     is_model_initialized = False
     learning_rate = 0.001  # 默认学习率
     total_epochs = 50      # 默认训练轮次
+    max_length = 256       # 默认最大长度
     
     while True:
         print_menu()
@@ -137,11 +164,11 @@ def train_dialogue_model():
             if not is_model_initialized:
                 # 初始化新模型
                 print("未检测到模型，正在初始化新模型...")
-                model.new(embedding_dim=512, hidden_dim=2048, max_length=256)
+                model.new(embedding_dim=512, hidden_dim=2048, max_length=max_length)
                 is_model_initialized = True
             
             # 加载训练样本
-            samples = load_training_samples()
+            samples = load_training_samples(max_length=max_length)
             
             if not samples:
                 print("没有可用的训练样本，无法进行训练")
@@ -176,7 +203,7 @@ def train_dialogue_model():
             print("\n所有样本训练完成")
         
         elif choice == 'c':
-            # 设置学习率和训练次数
+            # 设置学习率、训练次数和最大长度
             try:
                 lr_input = input(f"请输入学习率 (当前: {learning_rate}): ").strip()
                 if lr_input:
@@ -190,7 +217,14 @@ def train_dialogue_model():
                     if total_epochs <= 0:
                         raise ValueError("训练轮次必须大于0")
                 
-                print(f"设置成功 - 学习率: {learning_rate}, 训练轮次: {total_epochs}")
+                # 新增最大长度设置
+                max_input = input(f"请输入最大长度 (当前: {max_length}): ").strip()
+                if max_input:
+                    max_length = int(max_input)
+                    if max_length <= 0:
+                        raise ValueError("最大长度必须大于0")
+                
+                print(f"设置成功 - 学习率: {learning_rate}, 训练轮次: {total_epochs}, 最大长度: {max_length}")
             except ValueError as e:
                 print(f"输入错误: {e}，保持原有设置")
         
@@ -250,7 +284,7 @@ def train_dialogue_model():
             if not is_model_initialized:
                 # 初始化新模型
                 print("未检测到模型，正在初始化新模型...")
-                model.new(embedding_dim=512, hidden_dim=2048, max_length=256)
+                model.new(embedding_dim=512, hidden_dim=2048, max_length=max_length)
                 is_model_initialized = True
             
             # 获取人工输入的对话
@@ -304,8 +338,8 @@ def train_dialogue_model():
             for i in range(epochs):
                 loss = model.train(prompt=prompt, target=target, study_lr=lr, epochs=1)
                 total_loss += loss
-                if (i + 1) % 10 == 0:  # 每10次输出一次进度
-                    print(f"训练进度: {i+1}/{epochs}，当前损失: {loss:.4f}")
+                #if (i + 1) % 10 == 0:  # 每10次输出一次进度
+                #    print(f"训练进度: {i+1}/{epochs}，当前损失: {loss:.4f}")
             
             avg_loss = total_loss / epochs
             print(f"训练完成! 平均损失: {avg_loss:.4f}")
@@ -319,4 +353,3 @@ def train_dialogue_model():
 
 if __name__ == "__main__":
     train_dialogue_model()
-    
