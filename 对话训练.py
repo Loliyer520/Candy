@@ -164,7 +164,7 @@ def train_dialogue_model():
             if not is_model_initialized:
                 # 初始化新模型
                 print("未检测到模型，正在初始化新模型...")
-                model.new(embedding_dim=512, hidden_dim=2048, max_length=max_length)
+                model.new(embedding_dim=256, hidden_dim=2048, max_length=max_length)
                 is_model_initialized = True
             
             # 加载训练样本
@@ -183,7 +183,7 @@ def train_dialogue_model():
                 continue
             
             # 训练循环
-            for epoch in range(total_epochs):
+            for epoch in range(1):
                 epoch_loss = 0.0
                 sample_count = 0
                 
@@ -192,7 +192,7 @@ def train_dialogue_model():
                         prompt=prompt,
                         target=target,
                         study_lr=learning_rate,
-                        epochs=1  # 每个样本训练一次
+                        epochs=total_epochs  # 每个样本训练一次
                     )
                     epoch_loss += loss
                     sample_count += 1
@@ -284,7 +284,7 @@ def train_dialogue_model():
             if not is_model_initialized:
                 # 初始化新模型
                 print("未检测到模型，正在初始化新模型...")
-                model.new(embedding_dim=512, hidden_dim=2048, max_length=max_length)
+                model.new(embedding_dim=256, hidden_dim=2048, max_length=max_length)
                 is_model_initialized = True
             
             # 获取人工输入的对话
@@ -334,15 +334,9 @@ def train_dialogue_model():
             
             # 进行训练
             print(f"\n开始训练，共{epochs}次...")
-            total_loss = 0.0
-            for i in range(epochs):
-                loss = model.train(prompt=prompt, target=target, study_lr=lr, epochs=1)
-                total_loss += loss
-                #if (i + 1) % 10 == 0:  # 每10次输出一次进度
-                #    print(f"训练进度: {i+1}/{epochs}，当前损失: {loss:.4f}")
-            
-            avg_loss = total_loss / epochs
-            print(f"训练完成! 平均损失: {avg_loss:.4f}")
+            loss = model.train(prompt=prompt, target=target, study_lr=lr, epochs=epochs)
+
+            print(f"训练完成! Loss: {loss:.4f}")
         
         elif choice == 'q':
             print("程序已退出")
