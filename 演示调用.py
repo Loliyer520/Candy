@@ -2,7 +2,7 @@ from candyfish import Model
 
 # 初始化模型
 model = Model()
-model.new(embedding_dim=512, hidden_dim=2048, max_length=1024)
+model.new(embedding_dim=256, hidden_dim=2048, max_length=1024)
 # model.load('data/test.spt')
 
 # 单次训练
