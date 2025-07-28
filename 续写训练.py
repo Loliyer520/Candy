@@ -2,8 +2,8 @@ import os
 from candyfish import Model
 import chardet
 
-EMBEDDING_DIM = 512
-HIDDEN_DIM = 2048
+EMBEDDING_DIM = 256
+HIDDEN_DIM = 1024
 MAX_LENGTH = 1024
 
 def detect_encoding(file_path):
