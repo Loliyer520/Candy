@@ -3,7 +3,7 @@ from candyfish import Model
 import chardet
 
 EMBEDDING_DIM = 256
-HIDDEN_DIM = 1024
+HIDDEN_DIM = 2048
 MAX_LENGTH = 1024
 
 def detect_encoding(file_path):
@@ -217,7 +217,7 @@ def main():
             print("无效的选择，请重试")
 
 if __name__ == "__main__":
-    EMBEDDING_DIM = 512
-    HIDDEN_DIM = 256
-    MAX_LENGTH = 32
+    EMBEDDING_DIM = 256
+    HIDDEN_DIM = 2048
+    MAX_LENGTH = 1024
     main()
