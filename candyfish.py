@@ -1,8 +1,6 @@
 import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from tqdm import tqdm
 
 printx = print
 def print(*args, **kwargs):
@@ -120,7 +118,6 @@ class Model:
         
         # 检查长度是否匹配
         if input_length != target_length:
-            # 调整目标序列长度以匹配输入序列
             target_seq = target_seq[:input_length]
             target_length = len(target_seq)
         
@@ -128,8 +125,14 @@ class Model:
         inputs = torch.tensor([full_input], dtype=torch.long).to(self.device)
         targets = torch.tensor([target_seq], dtype=torch.long).to(self.device)
         
-        # 创建填充掩码
-        mask = (inputs != self.char2idx['<PAD>']).float().to(self.device)
+        # 1. 创建填充掩码（Padding Mask）
+        pad_mask = (inputs != self.char2idx['<PAD>']).unsqueeze(1).unsqueeze(1).float().to(self.device)
+        
+        # 2. 创建因果掩码（Causal Mask）
+        causal_mask = torch.tril(torch.ones((1, 1, input_length, input_length), device=self.device))
+        
+        # 3. 组合掩码（Padding Mask + Causal Mask）
+        mask = pad_mask * causal_mask
         
         # 训练循环
         self.model.train()
@@ -141,7 +144,6 @@ class Model:
             
             # 确保输出和目标形状匹配
             if outputs.shape[1] != targets.shape[1]:
-                # 截取输出以匹配目标长度
                 outputs = outputs[:, :targets.shape[1], :]
             
             loss = self.criterion(
@@ -151,7 +153,6 @@ class Model:
             last_loss = loss.item()
             
             loss.backward()
-            # 梯度裁剪防止梯度爆炸
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             
@@ -226,9 +227,15 @@ class Model:
                 batch_inputs = batch_inputs.to(device, non_blocking=True)
                 batch_targets = batch_targets.to(device, non_blocking=True)
                 
+                # 获取序列长度
+                seq_len = batch_inputs.size(1)  # 添加这行
+                
                 # 创建填充掩码
-                mask = (batch_inputs != pad_idx).float().to(device)
-                mask = mask.unsqueeze(1).unsqueeze(1)
+                pad_mask = (batch_inputs != pad_idx).unsqueeze(1).unsqueeze(1).float().to(device)
+                # 创建因果掩码
+                causal_mask = torch.tril(torch.ones((1, 1, seq_len, seq_len), device=device))
+                # 组合掩码
+                mask = pad_mask * causal_mask
                 
                 self.optimizer.zero_grad()
                 
@@ -486,16 +493,25 @@ class SelfAttention(nn.Module):
         
         # 应用掩码（如果有）
         if mask is not None:
-            # 确保掩码维度与energy匹配
-            if mask.size(2) != energy.size(2) or mask.size(3) != energy.size(3):
-                # 动态创建正确尺寸的掩码
+            # 确保掩码是4维张量 [batch, heads, query_len, key_len]
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(1).unsqueeze(1)
+            elif mask.dim() == 3:
+                mask = mask.unsqueeze(1)
+                
+            # 调整掩码尺寸以匹配energy
+            if mask.size(-1) != key_len or mask.size(-2) != query_len:
+                # 创建正确尺寸的掩码
                 new_mask = torch.ones(
-                    (energy.size(0), 1, energy.size(2), energy.size(3)), 
+                    (N, self.heads, query_len, key_len), 
                     device=energy.device
                 )
                 # 对于生成模式（cache存在），只需要关注最后一个token
                 if cache is not None:
-                    new_mask[:, :, -1:, :] = 1  # 最后一行全可见
+                    new_mask[:, :, -1:, :] = 1
+                else:
+                    # 训练模式使用下三角掩码
+                    new_mask = torch.tril(new_mask)
             else:
                 new_mask = mask
             
