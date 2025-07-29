@@ -116,9 +116,9 @@ def train_dialogue_model():
     # 初始化模型和参数
     model = Model()
     is_model_initialized = False
-    learning_rate = 0.001  # 默认学习率
-    total_epochs = 50      # 默认训练轮次
-    max_length = 256       # 默认最大长度
+    learning_rate = 0.0005  # 默认学习率
+    total_epochs = 10      # 默认训练轮次
+    max_length = 512       # 默认最大长度
     
     while True:
         print_menu()
@@ -189,8 +189,7 @@ def train_dialogue_model():
                 
                 for prompt, target in samples:
                     loss = model.train(
-                        prompt=prompt,
-                        target=target,
+                        prompt=(prompt, target),
                         study_lr=learning_rate,
                         epochs=total_epochs  # 每个样本训练一次
                     )
@@ -334,7 +333,7 @@ def train_dialogue_model():
             
             # 进行训练
             print(f"\n开始训练，共{epochs}次...")
-            loss = model.train(prompt=prompt, target=target, study_lr=lr, epochs=epochs)
+            loss = model.train(prompt=(prompt, target), study_lr=lr, epochs=epochs)
 
             print(f"训练完成! Loss: {loss:.4f}")
         

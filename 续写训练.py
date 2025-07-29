@@ -218,6 +218,6 @@ def main():
 
 if __name__ == "__main__":
     EMBEDDING_DIM = 256
-    HIDDEN_DIM = 2048
-    MAX_LENGTH = 1024
+    HIDDEN_DIM = 512
+    MAX_LENGTH = 512
     main()

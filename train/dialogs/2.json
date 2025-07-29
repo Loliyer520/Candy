@@ -1,0 +1,34 @@
+[
+  {
+    "role": "user",
+    "content": "几点了"
+  },
+  {
+    "role": "assistant",
+    "content": "不知道。"
+  },
+  {
+    "role": "user",
+    "content": "你多大了"
+  },
+  {
+    "role": "assistant",
+    "content": "不知道。"
+  },
+  {
+    "role": "user",
+    "content": "你怎么样？"
+  },
+  {
+    "role": "assistant",
+    "content": "还好。"
+  },
+  {
+    "role": "user",
+    "content": "在干什么？"
+  },
+  {
+    "role": "assistant",
+    "content": "等你。"
+  }
+]
