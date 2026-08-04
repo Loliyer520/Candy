@@ -9,6 +9,7 @@
 │   ├── __init__.py      #   导出 API (RecurrentLIFSimulator / 事件记忆 / trainer)
 │   ├── lif_pytorch.py   #   0-1 膜电位神经元引擎 (LIF + 四层 + 双记忆层 + 循环生成)
 │   ├── episodic_memory.py # 事件记忆层 (P1 整体事件 + v2 自回归事件记忆)
+│   ├── zh_codec.py      #   v14.5 中文↔ASCII 编码译码器
 │   └── trainer.py       #   训练流程 + 对话推理 + 模型持久化
 ├── experiments/         # 历史实验归档 (experiment2~36, diag_*, verify_*)
 ├── models/              # 模型文件 (*.spt, 训练产物, 不入 Git)
@@ -22,8 +23,14 @@
 # 训练 (约 5 分钟, GPU): 字符解码 → 四层渐进 → 记忆头 → W_seq, 全为奖赏调制 Hebbian
 python train.py
 
+# 中文训练 (抽样 200 对话, hidden 1024)
+python train.py --zh --n-dialogues 200
+
 # 库内记忆场景演示 (快照恢复 + 位置头修正, 复述训练对话 — 当前可靠能力)
 python chat.py --model models/candy.spt --replay
+
+# 中文库内记忆演示
+python chat.py --model models/candy_zh.spt --corpus 语料.txt --replay --zh
 
 # 开放链路对话 (已知限制: 无快照 → 状态漂移/记忆幻觉, 见下)
 python chat.py --model models/candy.spt
@@ -102,15 +109,15 @@ python chat.py --model models/candy.spt --once "Hello"
 
 | 组件 | 维度 | 说明 |
 |------|------|------|
-| W_ih | 256×256 | 随机固定输入权重 (L1)，带 50% 选择性连接掩码，永不训练 |
-| W_deep | 3×256×256 | L1→L2→L3→L4 层间权重，奖赏调制 Hebbian 训练 |
-| V / V_deep | 256×4 | 各层膜电位向量，每个神经元 ∈ [0, 1] |
-| W_h2o | 8×256 | 解码权重，奖赏调制 Hebbian 训练 |
-| W_ctx_to_first | 8×256 | 记忆状态→首字符，奖赏调制 Hebbian 训练 |
-| W_ctx_to_pos[k] | 8×256 × 61 | **位置记忆头 (v13)**: 记忆状态→回复第 k 字符，生成时修正非首字 |
-| W_seq | 8×256 | 记忆状态→下一字符，奖赏调制 Hebbian 训练 |
-| W_coact | 256×256 | 关联记忆层，共发放追踪 + 回忆 |
-| MemWork | 256 | 工作记忆层，0-1 分级上下文状态 |
+| W_ih | 1024×1024 | 随机固定输入权重 (L1)，带 50% 选择性连接掩码，永不训练 |
+| W_deep | 3×1024×1024 | L1→L2→L3→L4 层间权重，奖赏调制 Hebbian 训练 |
+| V / V_deep | 1024×4 | 各层膜电位向量，每个神经元 ∈ [0, 1] |
+| W_h2o | 8×1024 | 解码权重，奖赏调制 Hebbian 训练 |
+| W_ctx_to_first | 8×1024 | 记忆状态→首字符，奖赏调制 Hebbian 训练 |
+| W_ctx_to_pos[k] | 8×1024 × 61 | **位置记忆头 (v13)**: 记忆状态→回复第 k 字符，生成时修正非首字 |
+| W_seq | 8×1024 | 记忆状态→下一字符，奖赏调制 Hebbian 训练 |
+| W_coact | 1024×1024 | 关联记忆层，共发放追踪 + 回忆 |
+| MemWork | 1024 | 工作记忆层，0-1 分级上下文状态 |
 
 ---
 
@@ -418,6 +425,23 @@ flowchart LR
   - 动态容量 v1-v6 + 遗忘 v7 全败, 唯一有效增长 = 硬件规模 (地址数)。
 - 新文件: experiment35.py, experiment36.py。
 
+**v14.5 扩大规模 + 中文支持 (zh_codec 外部编码)**:
+- 用户指令: "扩大规模，引入中文"
+- 架构决策: 中文通过 **zh_codec 外部编码器**（`\\uXXXX` 格式）编码为纯 ASCII
+  序列后进入网络，核心 lif_pytorch.py 保持纯 8-bit ASCII 不变。网络架构
+  零改动，只加一层编解码层。
+- 编码方案: ASCII 可打印字符 (32-126) 直接通过；反斜杠 `\\` 转义为 `\\\\`；
+  非 ASCII 字符 → `\\uXXXX` (Unicode 16 进制码点, 6 字符)。确定性、可逆、
+  无歧义。
+- 结构化编码 (方案 B): 输入向量前 output_size 位 = 字符 ASCII 码的 bit 位型
+  (双极性 {-1, +1})，后 hidden - output_size 位 = 随机二值。保证 W_h2o
+  线性可分性 (感知器收敛定理)。W_h2o 9 epoch 72/72 完美解码。
+- 扩大规模: HIDDEN_SIZE 256→1024。W_h2o 13×3750≈49K 参数，四层隐藏层
+  ~56M 参数，RTX 3060 8.6GB 可容纳。
+- 新文件: core/zh_codec.py (中文↔ASCII 编码译码器)。core/vocab.py 移除。
+- 结果: 英文冒烟 4/4 完整复述；中文冒烟 (\\u4F60\\u597D\\u5417\\uFF1F 等) 3/3
+  完整复述。全部通过。
+
 **v12.4 判别性修复** (diag_ctx_discrim): 状态信号 `state = max(v_peak, recall)`
 中, 二值化回忆 `(raw > 0.5)` 丢失强度信息 → 判别性崩塌 (独立 W 5/14);
 改为分级回忆 `clamp(raw / (H/2), 0, 1)` → 14/14。v_peak 分级本就 14/14,
@@ -483,12 +507,12 @@ result, conf = trainer.generate_response("Hello")
 
 | 指标 | 数值 |
 |------|------|
-| 隐藏层 | 4 层 × 256 神经元 |
-| 活跃突触 (W_ih) | ~32,768 (50% 稀疏) |
-| 层间突触 (W_deep) | ~98,304 (3 × 256×256, 50% 稀疏) |
+| 隐藏层 | 4 层 × 1024 神经元 (v14.5: 256→1024) |
+| 活跃突触 (W_ih) | ~524,288 (50% 稀疏) |
+| 层间突触 (W_deep) | ~1,572,864 (3 × 1024×1024, 50% 稀疏) |
 | 可训练参数 | ~6,144 + 层间 |
 | 记忆层 | 工作记忆 MemWork + 关联记忆 W_coact |
-| 存储占用 | ~2.4 MB (FP32) |
+| 存储占用 | ~38 MB (FP32) |
 
 ---
 

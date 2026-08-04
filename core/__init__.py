@@ -4,6 +4,7 @@ core — 生物脉冲神经网络 (Bio Neural Net) 成品内核
 纯生物脉冲神经网络 (SNN) 核心:
   - lif_pytorch.py    : 0-1 膜电位神经元引擎 (LIF + 四层前馈 + 双记忆层 + 循环生成)
   - episodic_memory.py: 事件记忆层 (P1 整体事件 + v2 自回归事件记忆, 纯联想)
+  - zh_codec.py       : 中文↔ASCII 编码译码器 (v14.5, 外部编解码)
   - trainer.py        : 训练流程 + 对话推理 + 模型持久化
 
 学习规则 (项目红线):

@@ -144,7 +144,7 @@ import torch
 # 神经元只做一件事: 加权和 > 0 则激活，否则不激活
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-HIDDEN_SIZE = 256               # 隐藏层神经元数 (固定为 256)
+HIDDEN_SIZE = 1024              # 默认隐藏层神经元数 (v14.5 扩大规模: 256→1024)
 
 
 class TorchLIFSimulator:
@@ -249,31 +249,56 @@ class TorchLIFSimulator:
             self.deep_masks.append(m_l)
 
     # ============================================================
-    # 字符 → 随机稠密编码映射表
-    # 每个字符绑定一个固定的随机 256-dim 二值向量 (~50% 活跃)
-    # 生物学类比: 不同感官输入激活不同的神经元群体
-    # 此编码是二值 {0, 1}，无连续数值
+    # 字符 → 结构化随机稠密编码映射表 (v14.5 方案 B)
+    #
+    # 前 output_size 位 = ASCII 码的 bit 位型 (双极性 {-1, +1}, 保证 W_h2o 线性可分)
+    # 后 hidden_size - output_size 位 = 随机二值 (隐藏层特征多样性)
+    #
+    # 理论依据:
+    #   单层感知器 (W_h2o) 的决策边界是超平面。纯随机编码中 ASCII 码 bit
+    #   与编码向量无结构关系 → N > d 时线性不可分概率剧增 (Cover 1965)。
+    #   结构化前缀将目标位显式编码 → 每个 bit j 的分类器直接在位置 j
+    #   找到对应位 → 感知器收敛定理保证有限步内收敛。
+    #
+    #   双极性 {-1, +1}: target=1 → +1, target=0 → -1。
+    #   单一权重 W_h2o[j,j] 承担两类判别, 信号不被随机噪声淹没。
     # ============================================================
-    CHAR_CODEBOOK = {}  # 延迟初始化
+    CHAR_CODEBOOK = {}  # 延迟初始化, 键 (ch, dim, output_size)
 
-    @staticmethod
-    def _get_char_code(ch):
-        """获取字符的随机稠密编码 (256-dim, ~50%活跃, 二值 {0,1})"""
-        if ch not in TorchLIFSimulator.CHAR_CODEBOOK:
-            code = ord(ch)
+    def _get_char_code(self, ch):
+        """获取字符的结构化随机稠密编码 (二值 {0,1})
+
+        编码结构:
+          [0..output_size-1]:           ASCII 码 bit 位型, 双极性 {-1, +1}
+          [output_size..hidden_size-1]: 随机二值 {0, 1} (RNG seed=ord(ch))
+        """
+        out_size = self.output_size
+        key = (ch, self.hidden_size, out_size)
+        if key not in TorchLIFSimulator.CHAR_CODEBOOK:
+            code = ord(ch) if len(ch) == 1 else 0
+            struct_bits = torch.tensor(
+                [float((code >> j) & 1) for j in range(out_size)],
+                dtype=torch.float32, device=DEVICE)
+            struct_bits = 2.0 * struct_bits - 1.0  # 双极性 {0,1}→{-1,+1}
+
+            rand_size = self.hidden_size - out_size
             rng = np.random.RandomState(code)
-            vec = torch.from_numpy((rng.rand(HIDDEN_SIZE) > 0.5).astype(np.float32)).to(DEVICE)
-            TorchLIFSimulator.CHAR_CODEBOOK[ch] = vec
-        return TorchLIFSimulator.CHAR_CODEBOOK[ch]
+            if rand_size > 0:
+                rand_part = torch.from_numpy(
+                    (rng.rand(rand_size) > 0.5).astype(np.float32)).to(DEVICE)
+                vec = torch.cat([struct_bits, rand_part])
+            else:
+                vec = struct_bits
 
-    @staticmethod
-    def _char_to_8bit(ch):
-        """字符 → 随机稠密编码 (兼容旧接口名)"""
-        return TorchLIFSimulator._get_char_code(ch).clone()
+            TorchLIFSimulator.CHAR_CODEBOOK[key] = vec
+        return TorchLIFSimulator.CHAR_CODEBOOK[key]
 
-    @staticmethod
-    def _text_to_codes(text):
-        """文本 → ASCII 码列表 (仅可打印字符)"""
+    def _char_to_8bit(self, ch):
+        """字符 → 结构化随机稠密编码 (兼容旧接口名)"""
+        return self._get_char_code(ch).clone()
+
+    def _text_to_codes(self, text):
+        """文本 → ASCII 码列表 (仅可打印字符, 32-126)"""
         return [ord(c) for c in text if 32 <= ord(c) <= 126]
 
     # ============================================================
@@ -584,20 +609,20 @@ def train_w_h2o_stdp_gpu(sim, train_codes, num_epochs=200, verbose=True):
     t0 = time.perf_counter()
 
     n_vocab = len(train_codes)
-    output_size = 8
-    hidden_size = HIDDEN_SIZE
+    output_size = sim.output_size  # 8-bit ASCII
+    hidden_size = sim.hidden_size
 
-    # 目标: 8-bit 编码 (仅用于计算奖赏信号)
+    # 目标: output_size-bit 编码 (仅用于计算奖赏信号)
     targets_gpu = torch.zeros(n_vocab, output_size, dtype=torch.float32, device=DEVICE)
     for i, c in enumerate(train_codes):
         for j in range(output_size):
             targets_gpu[i, j] = float((c >> j) & 1)
 
-    # 输入: 随机稠密编码 (二值) — 直接用于 W_h2o 解码
+    # 输入: 结构化随机稠密编码 (二值, 含 ASCII bit 前缀)
     input_vecs_gpu = torch.zeros(n_vocab, hidden_size, dtype=torch.float32, device=DEVICE)
     for i, c in enumerate(train_codes):
         ch = chr(c) if 32 <= c <= 126 else '?'
-        input_vecs_gpu[i] = TorchLIFSimulator._get_char_code(ch)
+        input_vecs_gpu[i] = sim._get_char_code(ch)
 
     # 初始评估 — 直接解码随机稠密编码
     init_correct = sum(1 for i, c in enumerate(train_codes) if sim.check_decode(input_vecs_gpu[i], c))
@@ -645,8 +670,10 @@ def train_w_h2o_stdp_gpu(sim, train_codes, num_epochs=200, verbose=True):
             #      "应发未发"的位永远无学习路径 (死神经元)
             #    - ★ 无 center = clamp(raw, -1, 1): 连续数值运算, 已移除
             #    - ★ 无 b_o 偏置更新: 连续数值运算, 已移除
-            for j in range(output_size):
-                sim.W_h2o[j] += lr * rpe[j] * vec
+            #    - v14.5 性能优化: 13 次逐行更新合并为一次外积
+            #      (ΔW = lr × outer(RPE, pre)), 数学完全等价,
+            #      仍是逐样本更新 (非批量), 学习规则不变
+            sim.W_h2o += lr * torch.outer(rpe, vec)
             sim.W_h2o.clamp_(-10.0, 10.0)
 
             # 统计全部正确的样本数
@@ -869,7 +896,7 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
 
         Returns:
             outputs_list: 每个字符的最深层二值输出列表 (用于 W_seq 训练)
-            state: 工作记忆累积状态 (256-dim, 每个元素 ∈ [0, 1])
+            state: 工作记忆累积状态 (hidden_size-dim, 每个元素 ∈ [0, 1])
         """
         chars = [c for c in text if 32 <= ord(c) <= 126]
         if not chars:
@@ -1373,7 +1400,7 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
             for j in range(output_size):
                 targets_gpu[i, j] = float((c >> j) & 1)
 
-        # 输入: 随机稠密编码 (二值)
+        # 输入: 结构化随机稠密编码 (二值)
         input_vecs_gpu = torch.zeros(n_vocab, self.hidden_size, dtype=torch.float32, device=DEVICE)
         for i, c in enumerate(train_codes):
             ch = chr(c) if 32 <= c <= 126 else '?'

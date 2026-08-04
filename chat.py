@@ -6,6 +6,7 @@ chat.py — 生物脉冲神经网络对话入口
   python chat.py --model models/candy.spt                 # 交互对话 (开放链路)
   python chat.py --model models/candy.spt --once "Hello"  # 单次查询
   python chat.py --model models/candy.spt --replay        # 库内记忆场景演示
+  python chat.py --model models/candy_zh.spt --corpus 语料.txt --replay  # 中文库内演示
 
 生成机制: 0-1 膜电位神经元循环生成 + 位置记忆头修正 (无 LLM/检索)。
 已知限制 (README v13): 开放链路无快照 → 状态漂移/记忆幻觉; 库内记忆场景
@@ -15,6 +16,8 @@ chat.py — 生物脉冲神经网络对话入口
 import argparse
 
 from core import load_model, RecurrentTrainer, DIALOGUES, DEVICE
+from core.trainer import load_zh_dialogues
+from core.zh_codec import encode, decode
 
 
 def main():
@@ -25,36 +28,48 @@ def main():
                     help="库内记忆场景演示 (快照恢复, 复述训练对话)")
     ap.add_argument("--max-steps", type=int, default=30, help="最大生成步数")
     ap.add_argument("--no-pos-memory", action="store_true", help="关闭位置记忆头修正")
+    ap.add_argument("--corpus", default=None, help="中文预料路径")
+    ap.add_argument("--zh", action="store_true", help="中文模式 (输入输出经 zh_codec)")
     args = ap.parse_args()
 
     print(f"[加载] {args.model} → {DEVICE} ...", flush=True)
     sim = load_model(args.model)
-    trainer = RecurrentTrainer(sim, dialogues=DIALOGUES)
+    if args.corpus:
+        raw_dialogues = load_zh_dialogues(
+            args.corpus, n=200, user_max=120, resp_min=4, resp_max=200)
+        print(f"[语料] 中文对话 {len(raw_dialogues)} 对", flush=True)
+        dialogues = [(encode(inp), encode(resp)) for inp, resp in raw_dialogues]
+    else:
+        dialogues = DIALOGUES
+    trainer = RecurrentTrainer(sim, dialogues=dialogues)
     use_pos = not args.no_pos_memory
     print("[就绪] 生物脉冲神经网络 (0-1 膜电位 + 奖赏调制 Hebbian)", flush=True)
 
     if args.replay:
         print("\n[库内记忆场景] 快照恢复 + 位置头修正:", flush=True)
         n_ok = 0
-        for inp, resp in DIALOGUES:
+        for inp, resp in dialogues:
             result, conf = trainer.memory_replay_response(
                 inp, resp, max_steps=len(resp), use_pos_memory=use_pos)
+            decoded = decode(result) if result and args.zh else result
+            orig_resp = decode(resp) if args.zh else resp
             mark = "OK" if result == resp else "miss"
             n_ok += (result == resp)
-            print(f"  用户: {inp}\n  Bot : {result[:60]}  [{mark}, conf={conf:.2f}]",
+            print(f"  用户: {orig_resp[:40]}\n  Bot : {decoded[:60]}  [{mark}, conf={conf:.2f}]",
                   flush=True)
-        print(f"  完整复述: {n_ok}/{len(DIALOGUES)}", flush=True)
+        print(f"  完整复述: {n_ok}/{len(dialogues)}", flush=True)
         return
 
     if args.once is not None:
+        input_ascii = encode(args.once) if args.zh else args.once
         result, conf = trainer.generate_response(
-            args.once, max_steps=args.max_steps, use_pos_memory=use_pos)
+            input_ascii, max_steps=args.max_steps, use_pos_memory=use_pos)
+        decoded = decode(result) if result and args.zh else result
         print(f"用户: {args.once}", flush=True)
-        print(f"Bot [conf={conf:.2f}]: {result}", flush=True)
+        print(f"Bot [conf={conf:.2f}]: {decoded}", flush=True)
         return
 
-    print("\n[开放链路] 输入 'quit' 退出对话 (已知限制: 无快照 → 状态漂移)",
-          flush=True)
+    print("\n[开放链路] 输入 'quit' 退出对话 (已知限制: 无快照 → 状态漂移)", flush=True)
     while True:
         try:
             user_input = input("你: ").strip()
@@ -62,9 +77,11 @@ def main():
                 break
             if not user_input:
                 continue
+            input_ascii = encode(user_input) if args.zh else user_input
             result, conf = trainer.generate_response(
-                user_input, max_steps=args.max_steps, use_pos_memory=use_pos)
-            print(f"Bot [conf={conf:.2f}]: {result[:120]}", flush=True)
+                input_ascii, max_steps=args.max_steps, use_pos_memory=use_pos)
+            decoded = decode(result) if result and args.zh else result
+            print(f"Bot [conf={conf:.2f}]: {decoded[:120]}", flush=True)
         except (EOFError, KeyboardInterrupt):
             break
     print("Done.", flush=True)
