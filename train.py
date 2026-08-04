@@ -26,18 +26,12 @@ def main():
     ap.add_argument("--epochs", type=int, default=200, help="字符解码训练轮数")
     ap.add_argument("--hidden-size", type=int, default=256, help="隐藏层神经元数")
     ap.add_argument("--layers", type=int, default=4, help="隐藏层层数")
-    ap.add_argument("--batch-size", type=int, default=1,
-                    help="批量更新大小 (默认 1 = 原逐样本即时 Hebbian; "
-                         ">1 用 mini-batch Hebbian, 规则不变仅加速)")
     ap.add_argument("--quiet", action="store_true", help="关闭详细输出")
     args = ap.parse_args()
 
     t0 = time.perf_counter()
     print("=" * 60, flush=True)
     print("  生物脉冲神经网络训练 — 奖赏调制 Hebbian (无梯度)", flush=True)
-    if args.batch_size > 1:
-        print(f"  批量更新: batch_size={args.batch_size} (ΔW=lr×Σ rpe⊗pre 外积和)",
-              flush=True)
     print("=" * 60, flush=True)
 
     sim = train_full(
@@ -45,7 +39,6 @@ def main():
         hidden_size=args.hidden_size,
         num_layers=args.layers,
         decode_epochs=args.epochs,
-        batch_size=args.batch_size,
         verbose=not args.quiet,
     )
 

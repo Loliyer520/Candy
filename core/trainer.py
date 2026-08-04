@@ -58,7 +58,7 @@ DIALOGUES = [
 # 完整训练流程 (对应 test_recurrent_learning.py Step 1→3)
 # ============================================================
 def train_full(dialogues=None, hidden_size=256, num_layers=4,
-               decode_epochs=200, seq_iters=200, batch_size=1, verbose=True):
+               decode_epochs=200, seq_iters=200, verbose=True):
     """训练完整生物脉冲网络, 返回训练好的 RecurrentLIFSimulator。
 
     流程:
@@ -73,9 +73,6 @@ def train_full(dialogues=None, hidden_size=256, num_layers=4,
         仅保留学习形态, 端到端质量依赖位置头修正 (Step 2.5)。
       - 训练后保留 _coact_snapshots/_seq_snapshots — 库内记忆场景
         (快照恢复) 字符级 96.5% 依赖它们 (README v13 Step 4)。
-      - batch_size (可选, 默认 1 = 原逐样本逻辑): >1 时 Step 2.5/3
-        用 mini-batch Hebbian (ΔW = lr × Σ rpe⊗pre 外积和), 规则公式
-        不变, 仅向量化减少 GPU kernel 启动开销。
     """
     dialogues = DIALOGUES if dialogues is None else dialogues
 
@@ -104,14 +101,12 @@ def train_full(dialogues=None, hidden_size=256, num_layers=4,
     sim.train_context_to_first(dialogues, lr=0.05, n_iter=500)
 
     if verbose:
-        print(f"[Step 2.5] 训练位置记忆头 (修正非首字, batch_size={batch_size})...", flush=True)
-    sim.train_pos_heads(dialogues, lr=0.05, n_iter=500, batch_size=batch_size)
+        print(f"[Step 2.5] 训练位置记忆头 (修正非首字)...", flush=True)
+    sim.train_pos_heads(dialogues, lr=0.05, n_iter=500)
 
     if verbose:
-        print(f"[Step 3] 训练 W_seq ({seq_iters} iters, batch_size={batch_size}, "
-              f"结构性不可解仅保留形态)...", flush=True)
-    best_acc = sim.train_sequence(dialogues, lr=0.5, n_iter=seq_iters,
-                                  batch_size=batch_size)
+        print(f"[Step 3] 训练 W_seq ({seq_iters} iters, 结构性不可解仅保留形态)...", flush=True)
+    best_acc = sim.train_sequence(dialogues, lr=0.5, n_iter=seq_iters)
     if verbose:
         print(f"  W_seq best_acc = {best_acc:.1%} (已知限制 ~5-22%)", flush=True)
     return sim
