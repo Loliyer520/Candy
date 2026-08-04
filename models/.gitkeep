@@ -1,0 +1,6 @@
+# 此目录存放训练好的模型文件 (*.spt)
+
+- 训练: `python train.py` → 生成 `models/candy.spt`
+- 对话: `python chat.py --model models/candy.spt`
+
+模型文件较大, 通常不进 Git (已在 .gitignore 排除)。

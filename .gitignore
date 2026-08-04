@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 模型文件 (训练产物, 体积大, 不入库)
+models/*.spt
+
+# 实验临时输出
+*.log
