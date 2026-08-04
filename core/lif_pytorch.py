@@ -1037,7 +1037,8 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
 
     # ==================== 位置记忆头训练 (v13) ====================
 
-    def train_pos_heads(self, dialogues, max_pos=64, lr=0.05, n_iter=500, n_loops=1):
+    def train_pos_heads(self, dialogues, max_pos=64, lr=0.05, n_iter=500,
+                        n_loops=1, batch_size=1):
         """训练位置记忆头 — 上下文状态 → 回复第 k 字符 (k = 0, 1, 2, ...)
 
         ★ 目标: "增加记忆层, 对非首字结果进行修正"。
@@ -1051,13 +1052,21 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
 
         ★ v13.1: n_loops 自回归循环 (透传给 encode_text_lif), 默认 1。
 
+        ★ v14.2 批量更新 (可选): batch_size > 1 时 mini-batch Hebbian,
+          更新 = ΔW = lr × Σ(rpe ⊗ pre) 外积和, 规则公式不变,
+          特征仅计算一次 (确定性 top-k); 资格迹不兼容 (自动回退)。
+
         Args:
             dialogues: 对话对列表 [(inp, resp), ...]
             max_pos: 位置记忆头上限 (超出部分生成时回退 W_seq)
             lr: 学习率
             n_iter: 每位置训练迭代次数
             n_loops: 每次输入自回归前向轮数 (v13.1, 默认 1)
+            batch_size: 批量更新大小 (默认 1 = 原逐样本即时 Hebbian)
         """
+        if batch_size > 1 and self.use_eligibility_trace:
+            print("  [warn] 批量更新与资格迹不兼容 → 回退逐样本 (batch_size=1)")
+            batch_size = 1
         # 收集 (acc_state, 回复字符码列表) — 复用 _coact_snapshots (v12.3)
         # ★ 必须恢复对应快照再编码: train_context_to_first 后 W_coact 已是
         #   最后一个对话的累积状态, 不恢复则位置头训练状态与生成/评估漂移。
@@ -1091,16 +1100,32 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
             # ★ v14: 每位置独立资格迹矩阵
             E = torch.zeros_like(W) if self.use_eligibility_trace else None
             idx = list(range(len(samples)))
-            for _ in range(n_iter):
-                random.shuffle(idx)
-                for m in idx:
-                    st, _ = samples[m]
-                    # ★ v14: DG 稀疏分离 (训练/回忆一致)
-                    feat = self._mem_feature(st)
-                    out = (W @ feat + b > 0).float()
-                    rpe = tgts[m] - out
-                    # ★ v14: 统一更新入口 (即时 Hebbian 或三因子资格迹)
-                    self._hebbian_step(W, rpe, feat, out, lr, E)
+            if batch_size > 1:
+                # ★ v14.2 批量更新: 特征确定性, 预计算一次;
+                #   ΔW = lr × Σ(rpe ⊗ pre) 外积和矩阵运算
+                feats_all = self._mem_feature_batch(
+                    torch.stack([samples[i][0] for i in idx]))
+                for _ in range(n_iter):
+                    random.shuffle(idx)
+                    for start in range(0, len(samples), batch_size):
+                        bi = idx[start:start + batch_size]
+                        fb = feats_all[bi]
+                        outs = (fb @ W.t() + b > 0).float()
+                        rpes = tgts[bi] - outs
+                        W += lr * (rpes.t() @ fb)
+                        W.clamp_(-10.0, 10.0)
+            else:
+                # ★ 原逐样本即时 Hebbian (默认, batch_size=1)
+                for _ in range(n_iter):
+                    random.shuffle(idx)
+                    for m in idx:
+                        st, _ = samples[m]
+                        # ★ v14: DG 稀疏分离 (训练/回忆一致)
+                        feat = self._mem_feature(st)
+                        out = (W @ feat + b > 0).float()
+                        rpe = tgts[m] - out
+                        # ★ v14: 统一更新入口 (即时 Hebbian 或三因子资格迹)
+                        self._hebbian_step(W, rpe, feat, out, lr, E)
             self.W_ctx_to_pos.append(W)
             self.b_ctx_to_pos.append(b)
 
@@ -1144,6 +1169,23 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
         都必须经此入口, 保证启用 DG 分离时训练/推理状态逐位一致。
         """
         return self._dg_separate(state)
+
+    def _mem_feature_batch(self, states):
+        """批量版 _mem_feature — 按行 top-k 稀疏化, 与逐样本版逐位一致
+
+        仅用于批量更新 (batch_size > 1) 的向量化实现: torch.topk(dim=1)
+        每行独立, 数学结果与逐样本 _dg_separate 完全相同, 仅合并
+        矩阵运算减少 GPU kernel 启动开销。
+        """
+        if not self.use_dg_separation:
+            return states
+        k = min(self.dg_k, states.shape[1])
+        if k <= 0:
+            return torch.zeros_like(states)
+        out = torch.zeros_like(states)
+        _, idx = states.topk(k, dim=1)
+        out.scatter_(1, idx, 1.0)
+        return out
 
     def _hebbian_step(self, W, rpe, pre, post, lr, E=None):
         """★ 统一权重更新: 即时 RPE 调制 Hebbian 或三因子资格迹
@@ -1200,7 +1242,8 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
 
     # ==================== W_seq 序列训练 — 奖赏调制 Hebbian ====================
 
-    def train_sequence(self, dialogues, lr=0.5, n_iter=1000, n_loops=1):
+    def train_sequence(self, dialogues, lr=0.5, n_iter=1000, n_loops=1,
+                       batch_size=1):
         """训练 W_seq — 奖赏预测误差调制 Hebbian 学习
 
         ★ 学习规则: Δw = lr × RPE_j × pre_activity
@@ -1211,13 +1254,20 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
           - ★ 无 b_seq 偏置更新: 连续数值运算, 已移除
           - 无 autograd，无反向传播，无批量处理，无目标误差
 
-        ★ v13.1: n_loops 自回归循环 (透传给 encode_text_lif_states), 默认 1。
+        ★ v14.2 批量更新 (可选, 默认 batch_size=1 完全等价原逻辑):
+          batch_size > 1 时把逐样本循环向量化为 mini-batch Hebbian —
+          batch 内共享当前 W 计算 RPE, 更新 = ΔW = lr × Σ_batch(rpe ⊗ pre)
+          外积和 (矩阵运算), 学习规则公式逐样本不变, 无梯度/无损失。
+          仅减少 GPU kernel 启动开销 (小张量逐样本调用是耗时主因)。
+          与逐样本在线更新 (每个样本看到更新后的 W) 有 mini-batch
+          语义差异; 资格迹模式不兼容 (自动回退 batch_size=1)。
 
         Args:
             dialogues: 对话对列表 [(inp, resp), ...]
             lr: 学习率
             n_iter: 训练迭代次数
             n_loops: 每次输入自回归前向轮数 (v13.1, 默认 1)
+            batch_size: 批量更新大小 (默认 1 = 原逐样本即时 Hebbian)
 
         Returns:
             best_acc: 最佳预测准确率
@@ -1267,31 +1317,51 @@ class RecurrentLIFSimulator(TorchLIFSimulator):
         lr_current = lr
         # ★ v14: 资格迹模式需维护迹矩阵
         E = torch.zeros_like(self.W_seq) if self.use_eligibility_trace else None
+        if batch_size > 1 and self.use_eligibility_trace:
+            print("  [warn] 批量更新与资格迹不兼容 → 回退逐样本 (batch_size=1)")
+            batch_size = 1
         for epoch in range(n_iter):
             # ★ 随机打乱训练顺序 — 模拟生物学学习的不确定性
             random.shuffle(seq_data)
 
             correct_count = 0
-            for fr, target in seq_data:
-                # ★ v14: DG 稀疏分离 (启用时 top-k 二值稀疏化)
-                feat = self._mem_feature(fr)
-                # fr 是二值 {0, 1} (来自 encode_text_lif)
-                # ★ 纯二值阈值解码: 无 sigmoid, 无连续数值, 无 raw
-                out = self._binary_decode(self.W_seq, feat, self.b_seq)
+            if batch_size > 1:
+                # ★ v14.2 批量更新 (可选): batch 内共享当前 W 计算 RPE,
+                #   更新 = ΔW = lr × Σ_batch(rpe ⊗ pre) (外积和矩阵运算,
+                #   规则公式逐样本不变, 仅合并 kernel 减少启动开销)
+                for start in range(0, n_data, batch_size):
+                    batch = seq_data[start:start + batch_size]
+                    feats = self._mem_feature_batch(
+                        torch.stack([fr for fr, _ in batch]))
+                    tgt = torch.stack([t for _, t in batch])
+                    # 与 _binary_decode 逐位一致: (W·x + b > 0).float()
+                    outs = (feats @ self.W_seq.t() + self.b_seq > 0).float()
+                    rpes = tgt - outs
+                    self.W_seq += lr_current * (rpes.t() @ feats)
+                    self.W_seq.clamp_(-10.0, 10.0)
+                    correct_count += (outs == tgt).all(dim=1).sum().item()
+            else:
+                # ★ 原逐样本即时 Hebbian (默认, batch_size=1)
+                for fr, target in seq_data:
+                    # ★ v14: DG 稀疏分离 (启用时 top-k 二值稀疏化)
+                    feat = self._mem_feature(fr)
+                    # fr 是二值 {0, 1} (来自 encode_text_lif)
+                    # ★ 纯二值阈值解码: 无 sigmoid, 无连续数值, 无 raw
+                    out = self._binary_decode(self.W_seq, feat, self.b_seq)
 
-                # ★ 奖赏预测误差 (RPE): RPE_j = target_j − out_j ∈ {−1, 0, +1}
-                pred_bits = (out > 0.5).float()
-                target_bits = (target > 0.5).float()
-                rpe = target_bits - pred_bits
+                    # ★ 奖赏预测误差 (RPE): RPE_j = target_j − out_j ∈ {−1, 0, +1}
+                    pred_bits = (out > 0.5).float()
+                    target_bits = (target > 0.5).float()
+                    rpe = target_bits - pred_bits
 
-                # ★ v14: 统一更新入口 (即时 Hebbian 或三因子资格迹)
-                #   Δw_ji = lr × RPE_j × pre_activity (即时, v11)
-                #   或 三因子: 迹 e_ji ← λe_ji + pre×post, Δw = lr × M_j × e_ji
-                self._hebbian_step(self.W_seq, rpe, feat, pred_bits, lr_current, E)
+                    # ★ v14: 统一更新入口 (即时 Hebbian 或三因子资格迹)
+                    #   Δw_ji = lr × RPE_j × pre_activity (即时, v11)
+                    #   或 三因子: 迹 e_ji ← λe_ji + pre×post, Δw = lr × M_j × e_ji
+                    self._hebbian_step(self.W_seq, rpe, feat, pred_bits, lr_current, E)
 
-                # 统计全部正确的样本数
-                if (pred_bits == target_bits).all().item():
-                    correct_count += 1
+                    # 统计全部正确的样本数
+                    if (pred_bits == target_bits).all().item():
+                        correct_count += 1
 
             acc = correct_count / n_data
             if acc > best_acc:
