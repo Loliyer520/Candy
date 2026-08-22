@@ -5,6 +5,21 @@ __pycache__/
 
 # 模型文件 (训练产物, 体积大, 不入库)
 models/*.spt
+*.spt
+*.pt
+
+# 大数据 / 缓存 (撇除大二进制)
+*.zip
+hf_cache/
+
+# 核心引擎备份
+core/*.bak*
+core/*.v37.bak
 
 # 实验临时输出
 *.log
+*result.txt
+
+# 系统
+.DS_Store
+Thumbs.db
