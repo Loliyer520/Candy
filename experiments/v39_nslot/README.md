@@ -48,3 +48,35 @@
    -> `'the deer is big and the hare is green and the fox is calm and the wolf is fast!'`
 
 注: 模型 pickle 引用 slot_route_v38.R36NoPos, 需同目录有 slot_route_v38.py。
+
+
+---
+
+## r1 对外接口 (candyfish.py)
+
+v3.9 封装为顶层 API `CandyFish` (项目根 `candyfish.py`), 可从外部直接调用。
+r1 相对裸用 nslot_v39 的改进: 路由元数据 (sigma/types/n_roles) 内嵌模型文件,
+加载不再需要重建同 seed 语料。
+
+```python
+from candyfish import CandyFish
+
+# 训练新模型 (从 P37 基模型)
+train, held = CandyFish.build_corpus(n_blocks=4, n_train=200, n_held=24, seed=13)
+cf = CandyFish.train_new(train, held=held, iters=60)
+cf.save("model.pt")
+
+# 加载 (无需 corpus)
+cf = CandyFish.load("model.pt")
+
+# 续写 / 前缀续写
+cf.continue_text("big deer green hare calm fox fast wolf")
+cf.continue_text("big deer green hare calm fox fast wolf", prefix="the deer is ")
+
+# 继续训练 / 评估
+cf.train_more(train, iters=5)
+cf.evaluate(held)
+```
+
+冒烟验收 (_p57): 无 corpus 加载 + 续写与裸调用完全一致 (留出 23/24);
+train_new/train_more/save/reload/输入校验全通过。
